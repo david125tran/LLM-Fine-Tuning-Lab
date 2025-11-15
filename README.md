@@ -1,7 +1,16 @@
 # LLM-Fine-Tuning-Lab
 ---
-## About: 
-- In this repo, I play around with fine-tuning and apply concepts from the **[Hugging Face Smol Training Playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)**.  Each different folder is a different project.  
+## About: ⭐ 
+- In this repo, I play around with fine-tuning and apply concepts from the **[Hugging Face Smol Training Playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)** as well as two other tutorials that I learned fine-tuning from.  Each different folder is a different project.  
+
+## What is the Smol Training Playbook? 📘
+
+- A **practical, end-to-end guide** created by Hugging Face that teaches how to train and fine-tune LLMs efficiently.
+- Designed around the idea of "**smol models**" - smaller, compute-friendly LLMs (1B–7B params) that can still achieve strong results with the right techniques.
+- Covers the **entire lifecycle**: data prep, training strategies, evaluation, inference, deployment, and optimization.
+- Includes **best practices, recipes, experiments, and ablation insights** rather than just theory.
+- The Smol Playbook is the closest thing the open-source LLM world currently has to a “textbook” for modern fine-tuning best practices.
+
 ---
 ## 01: Fine-Tuning an LLM for Fraud Detection 💸
 - **Project Overview** - Fine-tune a large language model to detect fraudulent transactions in a **highly imbalanced dataset** (fraud = ~0.17% of samples).
