@@ -1,5 +1,8 @@
 # LLM-Fine-Tuning-Lab
 ---
+## About: 
+- In this repo, I play around with fine-tuning and apply concepts from the **[Hugging Face Smol Training Playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)**.  Each different folder is a different project.  
+---
 ## 01: Fine-Tuning an LLM for Fraud Detection 💸
 - **Project Overview** - Fine-tune a large language model to detect fraudulent transactions in a **highly imbalanced dataset** (fraud = ~0.17% of samples).
 - 🔗 **Credit Card Fraud Detection Dataset** - https://huggingface.co/datasets/David-Egea/Creditcard-fraud-detection
