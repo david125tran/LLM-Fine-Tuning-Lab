@@ -50,5 +50,7 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 | Baseline (untrained) | **0.630** | 0.635 | 0.628 | 0.629 |
 | Fine-Tuned | **0.680** ↑ | 0.676 | 0.675 | 0.672 |
 
+- **How the Model Learned Medical Reasoning: 🧠** In this project, the LLM improved not by memorizing answers, but by learning the underlying patterns and reasoning frameworks typical of medical multiple-choice questions. By fine-tuning on clinical scenarios, the model learned how to apply medical reasoning to new questions, allowing it to generalize effectively beyond the training set.
+
 ---
 
