@@ -1,7 +1,7 @@
 # LLM-Fine-Tuning-Lab
 ---
 ### About 🧩: 
-- In this repo, I play around with fine-tuning and apply concepts from the **[Hugging Face Smol Training Playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)** as well as two other tutorials that I learned fine-tuning from.  Each different folder is a different project.  
+- In this repo, I play around with fine-tuning.  Each different folder is a different project.  
 
 ---
 | Project | Task Type | Training Objective | Fine-Tuning Method | Key Techniques | Evaluation Focus |
