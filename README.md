@@ -57,7 +57,17 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 | Baseline (untrained) | **0.630** | 0.635 | 0.628 | 0.629 |
 | Fine-Tuned | **0.680** ↑ | 0.676 | 0.675 | 0.672 |
 
-- **How the Model Learned Medical Reasoning: 🧠** In this project, the LLM improved not by memorizing answers, but by learning the underlying patterns and reasoning frameworks typical of medical multiple-choice questions. By fine-tuning on clinical scenarios, the model learned how to apply medical reasoning to new questions, allowing it to generalize effectively beyond the training set.
+- **How the Model Learned Medical Reasoning: 🧠** In this project, the LLM improved not by memorizing answers, but by learning the underlying patterns and reasoning frameworks typical of medical multiple-choice questions. By fine-tuning on clinical scenarios, the model learned how to apply medical reasoning to new questions, allowing it to generalize effectively beyond the training set.  I intentionally limited training on the USMLE task to keep costs down. The modest improvement reflects how challenging medical reasoning is.  With more compute I’d expect further gains.
+
+- **🔍 Iteration & Review Note:** When revisiting this project months later to study my earlier design choices, I identified a subtle bug in my QLoRA setup when I loaded in the training.  I forgot to add in my 4-bit config (`bnb_config`).   
+```
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    torch_dtype=torch.bfloat16,
+    device_map={"":0},
+    quantization_config=bnb_config  ⬅️ Missing ❌
+)
+```
 
 ---
 
