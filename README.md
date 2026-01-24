@@ -6,9 +6,10 @@
 ---
 | Project | Task Type | Training Objective | Fine-Tuning Method | Key Techniques | Evaluation Focus |
 |--------|----------|--------------------|--------------------|----------------|------------------|
-| **01: Fraud Detection** | Binary classification (fraud vs non-fraud) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters) | • Tabular → text prompt conversion<br>• Severe class imbalance handling via upsampling<br>• Decision threshold tuning (precision–recall)<br>• Prompt-based classification | Recall-heavy evaluation for minority class (fraud detection), confusion matrix analysis |
+| **01: Fraud Detection** | Binary classification (fraud vs non-fraud) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters, 4-bit) | • Tabular → text prompt conversion<br>• Severe class imbalance handling via upsampling<br>• Decision threshold tuning (precision–recall)<br>• Prompt-based classification | Recall-heavy evaluation for minority class (fraud detection), confusion matrix analysis |
 | **02: USMLE MCQ Reasoning** | Multi-class classification (4-choice MCQ) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters) | • Logit-based answer scoring (final-token logits)<br>• Per-class upsampling for imbalance<br>• Instruction-tuned base model<br>• Cosine LR schedule + gradient checkpointing | Macro metrics (accuracy, precision, recall, F1) on held-out questions |
 | **03: Emotion Classification** | Multi-class classification (6 emotions) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters, 4-bit) | • Prompt-based constrained next-token classification<br>• Class-weighted CrossEntropyLoss (no resampling)<br>• Custom Trainer overriding loss<br>• Logit masking over label tokens | Macro F1 and recall across minority classes, confusion matrix balance |
+
 
 ---
 ## ⭐ 01: Fine-Tuning an LLM for Fraud Detection 💸
