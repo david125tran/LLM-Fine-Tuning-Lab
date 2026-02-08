@@ -9,31 +9,36 @@ Original file is located at
 ## 📦 Install Dependencies
 """
 
-!pip install accelerate bitsandbytes datasets huggingface_hub  peft scikit-learn transformers trl
+!pip -q install accelerate bitsandbytes datasets huggingface_hub peft scikit-learn transformers trl
 
 """## 📚 Libraries"""
 
 from collections import Counter
-from datasets import concatenate_datasets, load_dataset
-from google.colab import userdata
+from datasets import load_dataset, concatenate_datasets
 from huggingface_hub import login, notebook_login
-import numpy as np
+from google.colab import userdata
 import os
 from peft import LoraConfig
+import numpy as np
 import random
 from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
     accuracy_score,
     precision_recall_fscore_support,
+    classification_report,
+    confusion_matrix,
 )
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline, TrainingArguments
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    TrainingArguments,
+)
 from trl import SFTTrainer
 import torch
 
 """## 🔐 Login to Hugging Face Hub"""
 
-hf_token = os.environ.get('HF_Token') or userdata.get('HF_Token')
+hf_token = userdata.get('HF_Token')
 
 if hf_token:
     login(token=hf_token)
@@ -54,34 +59,31 @@ print(dataset["train"][:5])
 print("\ndataset['train'] column names:")
 print(dataset["train"].column_names)
 
+"""🎲 Reproducibility"""
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+
 """## 🧠 Define allowed answer letters and their token IDs"""
 
 LETTER_CHOICES = ["A", "B", "C", "D"]
-# Map each letter to its token id
-answer_token_ids = []
-for ch in LETTER_CHOICES:
-    ids = tok(ch, add_special_tokens=False).input_ids
-    if len(ids) != 1:
-        raise ValueError(f"Choice {ch!r} tokenized to {ids}, handle manually.")
-    answer_token_ids.append(ids[0])
-
-print(answer_token_ids)
-
-"""## 🧩 Create Prompts from Tabular Data
-
-
-"""
 
 def row_to_prompt(example):
+    """
+    Convert a dataset row into:
+      - prompt: chat-style instruction + question + options
+      - target: the correct letter (A/B/C/D)
+    """
     question = example["question"]
-    opts_dict = example["options"]          # dict like {'A': 'Ampicillin', ...}
+    options_dict = example["options"]  # dict like {'A': 'Ampicillin', ...}
 
-    # Make sure options are in alphabetical order A, B, C, D
-    letters = sorted(opts_dict.keys())      # e.g. ['A','B','C','D']
+    # Ensure options are in A/B/C/D order (some datasets are already)
+    letters = sorted(options_dict.keys())
 
-    options_text = "\n".join(
-        f"{letter}. {opts_dict[letter]}" for letter in letters
-    )
+    options_text = "\n".join(f"{letter}. {options_dict[letter]}" for letter in letters)
 
     prompt = (
         "You are a medical expert answering USMLE-style questions.\n\n"
@@ -91,191 +93,157 @@ def row_to_prompt(example):
     )
 
     # Provided label is already like 'A', 'B', ...
-    target = example["answer_idx"].strip().upper()
+    target = str(example["answer_idx"]).strip().upper()
 
-    # Optional safety check
     if target not in letters:
         raise ValueError(f"Target {target} not in options {letters}")
 
     return {"prompt": prompt, "target": target}
 
-# Examine row
-print(row_to_prompt(dataset["train"][0]))
+"""📌 Train/test split + mapping"""
 
-# Examine row to prompt
-test = row_to_prompt(dataset["test"][0])
-for key, value in test.items():
-    print(key, ":", value)
+# Original dataset has only 'train'. Split it.
+split = dataset["train"].train_test_split(test_size=0.2, seed=SEED)
 
-"""## ✂️ Train / Test Split
+train_ds = split["train"].map(row_to_prompt)
+test_ds  = split["test"].map(row_to_prompt)
 
-"""
-
-# 📌 The original dataset only contains a 'train' split.
-
-# Create a train-test split from the existing 'train' split.
-split_dataset = dataset["train"].train_test_split(
-    test_size=0.2, seed=42
-)
-
-# Now `split_dataset` is a DatasetDict containing 'train' and 'test' splits derived from the original `dataset['train']`.
-train_ds = split_dataset["train"].map(row_to_prompt)
-test_ds  = split_dataset["test"].map(row_to_prompt)
-
-print(split_dataset)
-
+print("\nSplit sizes:", len(train_ds), len(test_ds))
 print("Train label distribution:", Counter(train_ds["target"]))
-print("Test  label distribution (first 200):", Counter(test_ds[i]["target"] for i in range(len(test_ds))))
+print("Test  label distribution:", Counter(test_ds["target"]))
 
-for i in range(2):
-    print(train_ds[i]["prompt"])
-    print("target:", train_ds[i]["target"])
-    print("-" * 60)
-
-"""## ⚖️ Balance the datasets so that the model doesn't predict the most common answer"""
-
-print("Original train label distribution:", Counter(train_ds["target"]))
+"""⚖️ Balance the training  set (upsample minority classes)"""
 
 def balance_dataset(ds, label_col="target", seed=42):
+    """
+    Upsample each class to match the largest class count.
+    """
     counts = Counter(ds[label_col])
     max_count = max(counts.values())
 
     balanced_splits = []
     for label, count in counts.items():
-        # subset of this label
         subset = ds.filter(lambda ex, lbl=label: ex[label_col] == lbl)
 
-        # how many times to repeat whole subset
         repeat = max_count // count
-        # extra samples to reach exact max_count
         remainder = max_count % count
 
         pieces = [subset] * repeat
         if remainder > 0:
-            # shuffle so we don't always pick the same examples
             extra = subset.shuffle(seed=seed).select(range(remainder))
             pieces.append(extra)
 
-        upsampled = concatenate_datasets(pieces)
-        balanced_splits.append(upsampled)
+        balanced_splits.append(concatenate_datasets(pieces))
 
     balanced = concatenate_datasets(balanced_splits).shuffle(seed=seed)
-    print("Balanced train label distribution:", Counter(balanced[label_col]))
     return balanced
 
-balanced_train_ds = balance_dataset(train_ds)
 
-"""## 📊 Baseline Model Evaluation (Before Fine-Tuning)"""
+train_ds_used = balance_dataset(train_ds, seed=SEED)
+print("\n✅ Using balanced train set.")
+print("Balanced distribution:", Counter(train_ds_used["target"]))
 
-def predict_label_baseline(prompt: str) -> str:
+"""# 🧠 Model"""
+
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+
+# Load tokenizer
+tok = AutoTokenizer.from_pretrained(
+    MODEL_ID,
+    token=hf_token,
+    use_fast=True,
+    trust_remote_code=True,
+)
+
+# Ensure pad token exists
+if tok.pad_token is None:
+    tok.pad_token = tok.eos_token
+
+# Baseline model in bf16 (not 4-bit)
+base_model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    token=hf_token,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+)
+base_model.eval()
+
+""" 🔢 Token IDs for choices"""
+
+# Chat models often output " A" (leading space) as the next token.
+# Score the tokens for " A", " B", " C", " D".
+CHOICE_TEXTS = [" A", " B", " C", " D"]
+
+choice_token_ids = []
+for s in CHOICE_TEXTS:
+    ids = tok(s, add_special_tokens=False).input_ids
+    if len(ids) != 1:
+        raise ValueError(
+            f"Choice text {s!r} tokenized to {ids}. "
+            "This script assumes single-token choices for logits scoring."
+        )
+    choice_token_ids.append(ids[0])
+
+print("\nChoice token ids:", dict(zip(LETTER_CHOICES, choice_token_ids)))
+
+"""🔮 Logits-based prediction helper"""
+
+@torch.no_grad()
+def predict_letter_from_logits(model, prompt: str) -> str:
     """
-    Baseline model: choose A/B/C/D using logits from the base (unfined-tuned) model.
+    Build a chat prompt, run model forward once, and choose A/B/C/D
+    by comparing next-token logits for the tokens representing " A/B/C/D".
     """
-    msg = [{"role": "user", "content": prompt}]
+    # Llama-instruct expects a chat template
+    messages = [{"role": "user", "content": prompt}]
     prompt_text = tok.apply_chat_template(
-        msg,
+        messages,
         tokenize=False,
         add_generation_prompt=True,
     )
 
     inputs = tok(prompt_text, return_tensors="pt").to(model.device)
+    outputs = model(**inputs)
+    logits = outputs.logits  # [batch, seq_len, vocab]
+    next_token_logits = logits[0, -1]  # [vocab]
 
-    with torch.no_grad():
-        outputs = model(**inputs)           # 👈 base model
-        logits = outputs.logits             # [batch, seq_len, vocab]
+    scores = [next_token_logits[tok_id].item() for tok_id in choice_token_ids]
+    best = int(np.argmax(scores))
+    return LETTER_CHOICES[best]
 
-    last_logits = logits[0, -1]             # [vocab]
+def evaluate_logits_model(model, ds, n=200, label="Model"):
+    """
+    Evaluate using the logits method on first n examples.
+    """
+    n = min(n, len(ds))
+    y_true = [ds[i]["target"] for i in range(n)]
+    y_pred = [predict_letter_from_logits(model, ds[i]["prompt"]) for i in range(n)]
 
-    scores = [last_logits[token_id].item() for token_id in answer_token_ids]
-    best_idx = int(np.argmax(scores))
-    return LETTER_CHOICES[best_idx]
+    acc = accuracy_score(y_true, y_pred)
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average="macro", zero_division=0
+    )
 
+    print(f"\n{label} (N={n})")
+    print(f"  Acc={acc:.3f}  Prec={prec:.3f}  Rec={rec:.3f}  F1={f1:.3f}\n")
+    print("Classification report:")
+    print(classification_report(y_true, y_pred, labels=LETTER_CHOICES, zero_division=0))
 
-# 🧪 Reproducibility (smol playbook style)
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+    cm = confusion_matrix(y_true, y_pred, labels=LETTER_CHOICES)
+    print("Confusion matrix (rows=true, cols=pred):")
+    print("    " + "  ".join(LETTER_CHOICES))
+    for i, row in enumerate(cm):
+        print(f" {LETTER_CHOICES[i]}  {row}")
 
-# 🧠 Model
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+    return y_true, y_pred, cm
 
-# Load tokenizer to turn text <--> tokens
-tok = AutoTokenizer.from_pretrained(
-    MODEL_ID,
-    trust_remote_code=True,
-    token=hf_token,
-    use_fast=True,
-)
+"""📊 Baseline evaluation"""
 
-# Make sure pad token is defined
-if tok.pad_token is None:
-    tok.pad_token = tok.eos_token
+baseline_evaluation = evaluate_logits_model(base_model, test_ds, n=200, label="Baseline (bf16, no fine-tune)")
 
-# Load model
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
-    device_map="auto",            # Put model on GPU if available
-    torch_dtype=torch.bfloat16,   # Faster, lower-memory precision on modern GPUs.
-    trust_remote_code=True,
-    token=hf_token,
-)
+"""⚙️ Install + Reload Model in 4-bit (QLoRA-Ready)"""
 
-# Build a text-generation pipeline
-gen = pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tok,
-    device_map="auto",
-    dtype=torch.bfloat16,
-    max_new_tokens=1,             # Only need a single letter
-    do_sample=False,              # deterministic
-)
-
-# 📊 Baseline evaluation
-N_PREVIEW = min(200, len(test_ds))
-
-y_true = [test_ds[i]["target"] for i in range(N_PREVIEW)]
-y_pred = [predict_label_baseline(test_ds[i]["prompt"]) for i in range(N_PREVIEW)]
-
-# Core metrics
-acc = accuracy_score(y_true, y_pred)
-prec, rec, f1, _ = precision_recall_fscore_support(
-    y_true,
-    y_pred,
-    average="macro",          # macro > weighted for "real" multiclass performance
-    zero_division=0,
-)
-
-print(f"Baseline (N={N_PREVIEW})")
-print(f"  Acc={acc:.3f}  Prec={prec:.3f}  Rec={rec:.3f}  F1={f1:.3f}\n")
-
-# More detailed report (very smol-playbook)
-print("Classification report:")
-print(classification_report(y_true, y_pred, labels=LETTER_CHOICES, zero_division=0))
-
-# Optional: confusion matrix to see where it fails
-cm = confusion_matrix(y_true, y_pred, labels=LETTER_CHOICES)
-print("Confusion matrix (rows=true, cols=pred):")
-print("   " + "  ".join(LETTER_CHOICES))
-for i, row in enumerate(cm):
-    print(LETTER_CHOICES[i], row)
-
-"""## ⚙️ Install + Reload Model in 4-bit (QLoRA-Ready)
-
-
-"""
-
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-
-# 4-bit quantization config (QLoRA-style)
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_use_double_quant=True,
@@ -283,29 +251,14 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16,
 )
 
-# Tokenizer
-tok = AutoTokenizer.from_pretrained(
+qlora_model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
-    trust_remote_code=True,
     token=hf_token,
-    use_fast=True,
+    device_map="auto",
+    quantization_config=bnb_config, # Apply the 4-bit config
+    trust_remote_code=True,
 )
 
-if tok.pad_token is None:
-    tok.pad_token = tok.eos_token
-
-# Just in case, clear any leftover CUDA cache (after restart this shouldn't matter, but harmless)
-torch.cuda.empty_cache()
-
-# 🚀 Load model with 4-bit config, force everything on GPU 0
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.bfloat16,
-    device_map={"":0})
-
-"""## 🛠️ QLoRA config + Trainer"""
-
-# LoRA config (smol-friendly)
 lora_config = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -314,38 +267,41 @@ lora_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-# ---------------------------
-# 🧩 Formatting function
-# ---------------------------
+"""🧩 Formatting function"""
+
 def formatting_func(examples):
+    """
+    For SFTTrainer, create a single training string:
+      <chat template for prompt> + " A/B/C/D"
+    """
     texts = []
     for p, t in zip(examples["prompt"], examples["target"]):
-        msg = [{"role": "user", "content": p}]
+        messages = [{"role": "user", "content": p}]
         prompt_text = tok.apply_chat_template(
-            msg,
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
-        full = prompt_text + t
-        texts.append(full)
+        # Include space so it matches the scoring style
+        texts.append(prompt_text + " " + t)
     return {"text": texts}
 
-# Convert datasets
-train_for_sft = train_ds.map(
+train_for_sft = train_ds_used.map(
     formatting_func,
     batched=True,
-    remove_columns=train_ds.column_names,
+    remove_columns=train_ds_used.column_names,
 )
 
-eval_for_sft = test_ds.select(range(500)).map(
+eval_for_sft = test_ds.select(range(min(500, len(test_ds)))).map(
     formatting_func,
     batched=True,
     remove_columns=test_ds.column_names,
 )
 
-# ---------------------------
-# 🎯 Smol Training Arguments
-# ---------------------------
+print("\nSFT example:\n", train_for_sft[0]["text"][:500], "...")
+
+"""🎯 Training Arguments"""
+
 output_dir = "llama31-medqa-qlora"
 
 args = TrainingArguments(
@@ -354,7 +310,7 @@ args = TrainingArguments(
     per_device_eval_batch_size=1,
     gradient_accumulation_steps=16,
     learning_rate=2e-4,
-    num_train_epochs=3,
+    num_train_epochs=1,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
     logging_steps=20,
@@ -368,134 +324,30 @@ args = TrainingArguments(
     gradient_checkpointing=True,
 )
 
+"""🚂 QLoRA SFTTrainer"""
 
-# ---------------------------
-# 🚂 QLoRA SFTTrainer
-# ---------------------------
 trainer = SFTTrainer(
-    model=model,
+    model=qlora_model,
     peft_config=lora_config,
     train_dataset=train_for_sft,
     eval_dataset=eval_for_sft,
     args=args,
 )
 
-"""## 🚀 Fine-Tune Model with QLoRA"""
+"""🚀 Fine-Tune Model with QLoRA"""
 
 trainer.train()
 
-"""## 💾 Save the LoRA adapter and push to HuggingFace Hub"""
+ft_model = trainer.model
+ft_model.eval()
 
-adapter_dir = "llama31-medqa-qlora"
-trainer.model.save_pretrained(adapter_dir)
+"""Evaluate fine-tuned model (logits method)"""
+
+ft_evaluation = evaluate_logits_model(ft_model, test_ds, n=200, label="Fine-tuned (QLoRA)")
+
+"""Save adapter locally"""
+
+adapter_dir = output_dir
+ft_model.save_pretrained(adapter_dir)
 tok.save_pretrained(adapter_dir)
-print("Saved:", adapter_dir)
-trainer.model.push_to_hub("david125tran/llama31-medqa-qlora")
-tok.push_to_hub("david125tran/llama31-medqa-qlora")
-
-trainer.model.eval()
-
-# Make sure we're in eval mode
-ft_model = trainer.model.eval()
-
-# 🔧 Fix dtype mismatch: cast float32 Linear layers to bfloat16
-# This loop ensures all linear layers, including lm_head, are in bfloat16.
-for name, module in ft_model.named_modules():
-    if isinstance(module, torch.nn.Linear) and module.weight.dtype == torch.float32:
-        module.to(dtype=torch.bfloat16)
-
-# Build a new text-generation pipeline with the fine-tuned model
-ft_gen = pipeline(
-    "text-generation",
-    model=ft_model,
-    tokenizer=tok,
-    device_map="auto",
-    dtype=torch.bfloat16,
-    max_new_tokens=1,
-    do_sample=False,
-)
-
-def predict_label_ft(prompt: str) -> str:
-    """
-    Fine-tuned model: same logic, but using ft_model instead of base model.
-    """
-    msg = [{"role": "user", "content": prompt}]
-    prompt_text = tok.apply_chat_template(
-        msg,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-    inputs = tok(prompt_text, return_tensors="pt").to(ft_model.device)
-
-    with torch.no_grad():
-        outputs = ft_model(**inputs)        # 👈 fine-tuned model
-        logits = outputs.logits
-
-    last_logits = logits[0, -1]
-
-    scores = [last_logits[token_id].item() for token_id in answer_token_ids]
-    best_idx = int(np.argmax(scores))
-    return LETTER_CHOICES[best_idx]
-
-
-N_EVAL = min(200, len(test_ds))
-y_true_ft = [test_ds[i]["target"] for i in range(N_EVAL)]
-y_pred_ft = [predict_label_ft(test_ds[i]["prompt"]) for i in range(N_EVAL)]
-
-print("Pred label distribution (fine-tuned, logits-based):", Counter(y_pred_ft))
-
-acc = accuracy_score(y_true, y_pred_ft)
-prec, rec, f1, _ = precision_recall_fscore_support(
-    y_true, y_pred_ft, average="macro", zero_division=0
-)
-
-print(f"\nFine-tuned (logits-based) (N={N_EVAL})")
-print(f"  Acc={acc:.3f}  Prec={prec:.3f}  Rec={rec:.3f}  F1={f1:.3f}\n")
-
-print("Classification report (fine-tuned, logits-based):")
-print(classification_report(y_true, y_pred_ft, labels=LETTER_CHOICES, zero_division=0))
-
-cm = confusion_matrix(y_true, y_pred_ft, labels=LETTER_CHOICES)
-print("\nConfusion matrix (rows=true, cols=pred):")
-print("   " + "  ".join(LETTER_CHOICES))
-for i, row in enumerate(cm):
-    print(LETTER_CHOICES[i], row)
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt="d",
-    cmap="Blues",
-    xticklabels=LETTER_CHOICES,
-    yticklabels=LETTER_CHOICES
-)
-plt.xlabel("Predicted Label")
-plt.ylabel("True Label")
-plt.title("Confusion Matrix (Fine-tuned Model)")
-plt.show()
-
-# 📊 Baseline evaluation
-y_true_baseline = [test_ds[i]["target"] for i in range(N_PREVIEW)]
-y_pred_baseline = [predict_label_baseline(test_ds[i]["prompt"]) for i in range(N_PREVIEW)]
-
-# Calculate the confusion matrix for the baseline model
-cm_baseline = confusion_matrix(y_true_baseline, y_pred_baseline, labels=LETTER_CHOICES)
-
-plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm_baseline,
-    annot=True,
-    fmt="d",
-    cmap="Blues",
-    xticklabels=LETTER_CHOICES,
-    yticklabels=LETTER_CHOICES
-)
-plt.xlabel("Predicted Label")
-plt.ylabel("True Label")
-plt.title("Confusion Matrix (Baseline Model)")
-plt.show()
+print("\n✅ Saved adapter+tokenizer to:", adapter_dir)
