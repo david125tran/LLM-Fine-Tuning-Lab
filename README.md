@@ -7,7 +7,7 @@
 | Project | Task Type | Training Objective | Fine-Tuning Method | Key Techniques | Evaluation Focus |
 |--------|----------|--------------------|--------------------|----------------|------------------|
 | **01: Fraud Detection** | Binary classification (fraud vs non-fraud) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters, 4-bit) | • Tabular → text prompt conversion<br>• Severe class imbalance handling via upsampling<br>• Decision threshold tuning (precision–recall)<br>• Prompt-based classification | Recall-heavy evaluation for minority class (fraud detection), confusion matrix analysis |
-| **02: USMLE MCQ Reasoning** | Multi-class classification (4-choice MCQ) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters) | • Logit-based answer scoring (final-token logits)<br>• Per-class upsampling for imbalance<br>• Instruction-tuned base model<br>• Cosine LR schedule + gradient checkpointing | Macro metrics (accuracy, precision, recall, F1) on held-out questions |
+| **02: USMLE MCQ Reasoning** | Multi-class classification (4-choice MCQ) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters, 4-bit) | • Logit-based answer scoring (final-token logits)<br>• Per-class upsampling for imbalance<br>• Instruction-tuned base model<br>• Cosine LR schedule + gradient checkpointing | Macro metrics (accuracy, precision, recall, F1) on held-out questions |
 | **03: Emotion Classification** | Multi-class classification (6 emotions) | Supervised Fine-Tuning (SFT) | PEFT (QLoRA + LoRA adapters, 4-bit) | • Prompt-based constrained next-token classification<br>• Class-weighted CrossEntropyLoss (no resampling)<br>• Custom Trainer overriding loss<br>• Logit masking over label tokens | Macro F1 and recall across minority classes, confusion matrix balance |
 
 
@@ -41,9 +41,8 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 
 - **Project Overview:** Fine-tuned `Meta-Llama-3.1-8B-Instruct` on the **MedQA USMLE 4-choice multiple-choice dataset** to evaluate how well a general LLM can be adapted into a **medical reasoning classifier**.
 - **Dataset:** 🔗 https://huggingface.co/datasets/GBaker/MedQA-USMLE-4-options
-- **Why Llama-3.1-8B-Instruct? 🧩** I chose the Llama-3.1-8B-Instruct model because it strikes a strong balance between capability and efficiency-large enough to capture nuanced medical reasoning, but still lightweight enough for practical fine-tuning with QLoRA on a single GPU. Its instruction-tuned architecture also makes it well-suited for structured tasks like multiple-choice reasoning and logits-based classification.
 - **Highlights:**
-    - Scoring performed by comparing **logits of final token** against option tokens
+    - Scoring performed using final-token logits for A/B/C/D options
     - ⚖️ Handling Class Imbalance ⚖️ - Class frequencies were uneven, so the dataset was **upsampled with per-class balancing** to prevent the model from overpredicting the majority label.
     - QLoRA + 4-bit quantization
     - SFTTrainer (TRL)
@@ -52,23 +51,12 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 - **📊 Baseline vs Fine-Tuned Performance (first 200 eval samples):**
     - Model meaningfully improved after tuning
     - Even small fine-tuning (~3 epochs) improved classification consistency and accuracy
+    - Confusion matrix became more evenly distributed across classes.
 
 | Model | Accuracy | Macro Precision | Macro Recall | Macro F1 |
 |-------|----------|----------------|--------------|----------|
-| Baseline (untrained) | **0.630** | 0.635 | 0.628 | 0.629 |
-| Fine-Tuned | **0.680** ↑ | 0.676 | 0.675 | 0.672 |
-
-- **How the Model Learned Medical Reasoning: 🧠** In this project, the LLM improved not by memorizing answers, but by learning the underlying patterns and reasoning frameworks typical of medical multiple-choice questions. By fine-tuning on clinical scenarios, the model learned how to apply medical reasoning to new questions, allowing it to generalize effectively beyond the training set.  I intentionally limited training on the USMLE task to keep costs down. The modest improvement reflects how challenging medical reasoning is.  With more compute I’d expect further gains.
-
-- **🔍 Iteration & Review Note:** When revisiting this project months later to study my earlier design choices, I identified a subtle bug in my QLoRA setup when I loaded in the training.  I forgot to add in my 4-bit config (`bnb_config`).   
-```
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.bfloat16,
-    device_map={"":0},
-    quantization_config=bnb_config  ⬅️ Missing ❌
-)
-```
+| Baseline (untrained) | **0.615** | 0.660 | 0.619 | 0.597 |
+| Fine-Tuned | **0.650** ↑ | 0.650 | 0.648 | 0.647 |
 
 ---
 
