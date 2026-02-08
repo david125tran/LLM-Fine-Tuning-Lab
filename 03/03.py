@@ -17,17 +17,29 @@ from collections import Counter
 from datasets import load_dataset
 from google.colab import userdata
 from huggingface_hub import login
-import numpy as np, os, random, torch
+
+import os
+import random
+import numpy as np
+import torch
 from torch.nn import CrossEntropyLoss
+
 from sklearn.metrics import (
-    accuracy_score, precision_recall_fscore_support,
-    classification_report, confusion_matrix
+    accuracy_score,
+    precision_recall_fscore_support,
+    classification_report,
+    confusion_matrix,
 )
 
 from transformers import (
-    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
-    TrainingArguments, Trainer
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    default_data_collator,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    Trainer,
 )
+
 from peft import LoraConfig, get_peft_model, PeftModel
 
 """🔕 Disable Weights & Biases"""
@@ -45,31 +57,17 @@ if hf_token:
 else:
     print("HuggingFace token not found. Please set the HF_TOKEN environment variable or store it in Colab secrets.")
 
-dataset = load_dataset("dair-ai/emotion")
-
-emotion_map = {
-    0: "sadness", 1: "joy", 2: "love",
-    3: "anger", 4: "fear", 5: "surprise"
-}
-
-def convert_label(ex):
-    ex["emotion"] = emotion_map[ex["label"]]
-    return ex
-
-dataset["train"] = dataset["train"].map(convert_label)
-dataset["test"]  = dataset["test"].map(convert_label)
-
 """## 📥 Load dair-ai/emotion Dataset"""
 
 dataset = load_dataset("dair-ai/emotion")
 
 emotion_map = {
     0: "sadness", 1: "joy", 2: "love",
-    3: "anger", 4: "fear", 5: "surprise"
+    3: "anger",   4: "fear", 5: "surprise"
 }
 
 def convert_label(ex):
-    ex["emotion"] = emotion_map[ex["label"]]
+    ex["emotion"] = emotion_map[int(ex["label"])]
     return ex
 
 dataset["train"] = dataset["train"].map(convert_label)
@@ -78,14 +76,14 @@ dataset["test"]  = dataset["test"].map(convert_label)
 """⚖️ Inspect Dataset Balance"""
 
 label_counts = Counter(dataset["train"]["label"])
-print("\nLabel counts in train:")
-print(label_counts)
+print("\nLabel counts in train:", label_counts)
 
 """⚖️ Class Weights"""
 
-counts = torch.tensor([4666, 5362, 1304, 2159, 1937, 572], dtype=torch.float)
+counts = torch.tensor([label_counts[i] for i in range(6)], dtype=torch.float)
 weights = 1.0 / counts
-weights = weights / weights.sum()          # normalized weights
+# I keep mean=1 so the overall loss scale stays reasonable
+weights = weights / weights.mean()
 
 print("\nClass weights:", weights)
 
@@ -118,8 +116,9 @@ def row_to_prompt(example):
 train_ds = dataset["train"].map(row_to_prompt)
 test_ds  = dataset["test"].map(row_to_prompt)
 
-print("\nExample prompt row:")
-print(train_ds[0])
+print("\nExample prompt row:\n")
+print(train_ds[0]["prompt"])
+print("label_id:", train_ds[0]["label_id"])
 
 """🧪 Reproducibility"""
 
@@ -128,6 +127,12 @@ random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
+
+"""Hardware Configuration"""
+
+use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
+print(f"\nUsing bf16? {use_bf16}  | compute_dtype={compute_dtype}")
 
 """🧠 Shared Tokenizer"""
 
@@ -138,10 +143,13 @@ tok = AutoTokenizer.from_pretrained(
     token=hf_token,
     use_fast=True,
 )
+
+# pad token setup (important for batching)
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
 # We'll classify by looking only at these token IDs
+# NOTE: This is still a "last-token" trick — it's simple and fast, but not perfect.
 answer_token_ids = [
     tok(opt, add_special_tokens=False).input_ids[-1]
     for opt in OPTIONS
@@ -150,12 +158,14 @@ answer_token_ids_tensor = torch.tensor(answer_token_ids, dtype=torch.long)
 
 """🔢 Tokenize for Training"""
 
+MAX_LEN = 512
+
 def tokenize_fn(batch):
     enc = tok(
         batch["prompt"],
         truncation=True,
-        padding="max_length",
-        max_length=512,
+        padding="max_length",   # simple + predictable
+        max_length=MAX_LEN,
     )
     enc["labels"] = batch["label_id"]  # class index 0..5
     return enc
@@ -171,7 +181,6 @@ test_encoded = test_ds.map(
     remove_columns=test_ds.column_names,
 )
 
-# Make datasets return torch tensors
 train_encoded.set_format(type="torch")
 test_encoded.set_format(type="torch")
 
@@ -180,7 +189,7 @@ test_encoded.set_format(type="torch")
 baseline_model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    torch_dtype=compute_dtype,
     token=hf_token,
 )
 print("\nLoaded baseline_model (unfine-tuned).")
@@ -189,8 +198,10 @@ print("\nLoaded baseline_model (unfine-tuned).")
 
 def evaluate_model(model, ds_with_prompts, name: str, n_preview: int = 500):
     """
-    Evaluate a model using the same "next-token over OPTIONS" trick.
-    Uses ds_with_prompts (with 'prompt' + 'label_id').
+    Evaluate using the same "next-token over options" trick:
+      - Run model on prompt
+      - Grab logits at the final position
+      - Compare logits for the 6 option tokens
     """
     model.eval()
     N = min(n_preview, len(ds_with_prompts))
@@ -202,12 +213,22 @@ def evaluate_model(model, ds_with_prompts, name: str, n_preview: int = 500):
         prompt = ex["prompt"]
         label_id = ex["label_id"]
 
-        inputs = tok(prompt, return_tensors="pt").to(model.device)
+        inputs = tok(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=MAX_LEN,
+        ).to(model.device)
 
         with torch.no_grad():
             outputs = model(**inputs)
-            logits_full = outputs.logits[:, -1, :]                     # [1, vocab]
-            option_logits = logits_full[:, answer_token_ids_tensor]    # [1, 6]
+
+            # last non-pad token index (safe even if we pad later)
+            attn = inputs["attention_mask"]  # [1, T]
+            last_idx = int(attn.sum(dim=1).item() - 1)
+
+            logits_full = outputs.logits[:, last_idx, :]                  # [1, vocab]
+            option_logits = logits_full[:, answer_token_ids_tensor.to(model.device)]  # [1, 6]
             pred_class = option_logits.argmax(dim=-1).item()
 
         y_true.append(label_id)
@@ -229,14 +250,14 @@ def evaluate_model(model, ds_with_prompts, name: str, n_preview: int = 500):
     cm = confusion_matrix(y_true, y_pred)
     print("\nConfusion matrix (rows=true, cols=pred):")
     print("   " + "  ".join(OPTIONS))
-    for i, row in enumerate(cm):
-        print(f"{OPTIONS[i]:8s} {row}")
+    for r, row in enumerate(cm):
+        print(f"{OPTIONS[r]:8s} {row}")
 
     return y_true, y_pred, cm
 
 """📊 Baseline Evaluation"""
 
-_ = evaluate_model(baseline_model, test_ds, name="Baseline (unfine-tuned)")
+baseline_evaluation = evaluate_model(baseline_model, test_ds, name="Baseline (unfine-tuned)")
 
 """⚙️ QLoRA Base Model (4-bit) for Training"""
 
@@ -244,7 +265,7 @@ bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_use_double_quant=True,
     bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_compute_dtype=compute_dtype,
 )
 
 sft_base_model = AutoModelForCausalLM.from_pretrained(
@@ -270,21 +291,27 @@ print("Wrapped sft_base_model with LoRA → sft_model.")
 
 class WeightedLossTrainer(Trainer):
     """
-    Custom Trainer that:
+    Trainer that:
     - Uses class-weighted CrossEntropyLoss
-    - Only uses logits over the 6 emotion option tokens
+    - Scores only logits over the 6 emotion option tokens
+    - Uses attention_mask to find the real last token (with max_length padding)
     """
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs.pop("labels")                             # [batch]
-        outputs = model(**inputs)
-        logits_full = outputs.logits                              # [batch, seq_len, vocab]
-        last_logits = logits_full[:, -1, :]                       # [batch, vocab]
-        option_logits = last_logits[:, answer_token_ids_tensor]   # [batch, 6]
+        labels = inputs["labels"]  # [B]
+        outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
 
-        # Put weights and labels are on the same device as logits
-        device = option_logits.device
-        weighted_ce = CrossEntropyLoss(weight=weights.to(device))
-        loss = weighted_ce(option_logits, labels.to(device))
+        logits_full = outputs.logits  # [B, T, vocab]
+
+        # Find last non-padding token per row
+        attn = inputs["attention_mask"]  # [B, T]
+        last_idx = attn.sum(dim=1) - 1   # [B]
+        batch_idx = torch.arange(attn.size(0), device=attn.device)
+
+        last_logits = logits_full[batch_idx, last_idx, :]  # [B, vocab]
+        option_logits = last_logits[:, answer_token_ids_tensor.to(last_logits.device)]  # [B, 6]
+
+        weighted_ce = CrossEntropyLoss(weight=weights.to(option_logits.device))
+        loss = weighted_ce(option_logits, labels.to(option_logits.device))
 
         if return_outputs:
             return loss, outputs
@@ -314,10 +341,8 @@ trainer = WeightedLossTrainer(
     args=training_args,
     train_dataset=train_encoded,
     eval_dataset=test_encoded,
-    tokenizer=tok,
+    data_collator=default_data_collator,
 )
-
-print("\nFinished QLoRA fine-tuning; sft_model is trained.")
 
 """🚀 QLoRA Fine-Tuning"""
 
@@ -350,4 +375,4 @@ print("\nReloaded sft_model_reloaded from Hub.")
 
 """📊 Evaluate Fine-Tuned"""
 
-_ = evaluate_model(sft_model_reloaded, test_ds, name="Supervised Fine-Tuning Model")
+ft_evaulated = evaluate_model(sft_model_reloaded, test_ds, name="Supervised Fine-Tuning Model")
