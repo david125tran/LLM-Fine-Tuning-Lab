@@ -62,7 +62,7 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 
 ### ⭐ 03: Fine-Tuning an LLM for Emotion Classification (Class-Weighted QLoRA) 🎭
 
-- **Project Overview** I fine-tuned `Meta-Llama-3.1-8B-Instruct` to perform **multi-class emotion classification** on short text inputs using the `dair-ai/emotion` dataset.  The task involves predicting one of **six emotions**: *sadness, joy, love, anger, fear, surprise*.  Rather than treating this as a traditional sequence classification problem, I framed it as a **next-token prediction over constrained answer options**, leveraging the LLM’s generative nature while retaining a clean classification interface.
+- **Project Overview:** I fine-tuned `Meta-Llama-3.1-8B-Instruct` to perform **multi-class emotion classification** on short text inputs using the `dair-ai/emotion` dataset.  The task involves predicting one of **six emotions**: *sadness, joy, love, anger, fear, surprise*.  Rather than treating this as a traditional sequence classification problem, I framed it as a **next-token prediction over constrained answer options**, leveraging the LLM’s generative nature while retaining a clean classification interface.
 - **Dataset** 🔗 https://huggingface.co/datasets/dair-ai/emotion
 - **Highlights:**
   - ⚖️ **Class imbalance**
@@ -74,11 +74,11 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
     - This encourages the model to pay attention to minority classes without distorting the data distribution.
 - **📊 Baseline vs Fine-Tuned Performance (first 500 eval samples):**
 - **Results & Interpretation:**
-  - The baseline (unfine-tuned) model performed **poorly**, achieving only **28.4% accuracy** and a **macro F1 of 0.18**.
+  - The baseline (unfine-tuned) model performed **poorly**, achieving only **28.4% accuracy** and a **macro F1 of 0.182**.
   - It collapsed to predicting a small subset of majority emotions (*joy* and *anger*), completely failing to recognize several classes (*sadness, fear, surprise*), as seen in the confusion matrix.
   - After fine-tuning with **QLoRA + class-weighted loss**, performance improved dramatically:
-      - **Accuracy increased to 88.6%**
-      - **Macro F1 improved from 0.18 → 0.85**
+      - **Accuracy increased to 92.8%**
+      - **Macro F1 improved from 0.196 → 0.893**
       - Minority emotions such as *love* and *surprise* achieved strong recall, indicating successful mitigation of class imbalance.
   - This demonstrates that:
       - Prompt-based next-token classification alone is insufficient without task-specific supervision
@@ -88,5 +88,5 @@ F1 Score | **0.421** | Balanced precision/recall for imbalanced data |
 | Model | Accuracy | Macro Precision | Macro Recall | Macro F1 |
 |-------|----------|----------------|--------------|----------|
 | Baseline (unfine-tuned) | **0.284** | 0.196 | 0.279 | 0.182 |
-| Fine-Tuned (QLoRA + class-weighted loss) | **0.886**   | 0.864 | 0.868 | 0.852 |
+| Fine-Tuned (QLoRA + class-weighted loss) | **0.928**   | 0.883 | 0.906 | 0.893 |
 
